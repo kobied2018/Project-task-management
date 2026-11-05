@@ -1,0 +1,44 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "__TEAMS_APP_ID__",
+  "packageName": "com.fieldnotes.projectworkspace",
+  "developer": {
+    "name": "Fieldnotes",
+    "websiteUrl": "https://__TEAMS_DOMAIN__",
+    "privacyUrl": "https://__TEAMS_DOMAIN__/privacy",
+    "termsOfUseUrl": "https://__TEAMS_DOMAIN__/terms",
+    "mpnId": "00000000-0000-0000-0000-000000000000"
+  },
+  "name": {
+    "short": "Fieldnotes",
+    "full": "Fieldnotes Project Workspace"
+  },
+  "description": {
+    "short": "Shared project tasks, status, and meeting follow-ups.",
+    "full": "A shared project workspace for Teams. Organize work by topic, manage task status, and review action items extracted from meeting transcripts."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#173C36",
+  "staticTabs": [
+    {
+      "entityId": "fieldnotes-home",
+      "name": "Fieldnotes",
+      "contentUrl": "https://__TEAMS_DOMAIN__",
+      "websiteUrl": "https://__TEAMS_DOMAIN__",
+      "scopes": ["personal"]
+    }
+  ],
+  "validDomains": [
+    "__TEAMS_DOMAIN__",
+    "login.microsoftonline.com"
+  ],
+  "webApplicationInfo": {
+    "id": "__ENTRA_CLIENT_ID__",
+    "resource": "__ENTRA_APP_ID_URI__"
+  }
+}
