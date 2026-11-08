@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { app as teamsApp, authentication } from '@microsoft/teams-js';
 import {
-  AlignLeft, Archive, ArrowDown, ArrowUp, CalendarDays, Check, ChevronDown, ChevronRight, Copy,
+  AlignLeft, Archive, ArrowDown, ArrowUp, CalendarDays, Check, ChevronDown, ChevronRight, Copy, FileDown,
   CircleHelp, ExternalLink, FileUp, FolderKanban, ListFilter, MessageSquareText, MoreHorizontal,
   Pencil, Plus, RotateCcw, Search, ShieldCheck, Sparkles, Trash2, Type, UsersRound, X,
 } from 'lucide-react';
@@ -273,6 +273,83 @@ export default function App() {
   const completed = projectTasks.filter((task) => task.status === 'Done').length;
   const blocked = projectTasks.filter((task) => task.status === 'Blocked').length;
   const completion = projectTasks.length ? Math.round(completed / projectTasks.length * 100) : 0;
+
+  async function downloadReport() {
+    if (!project) return;
+    const topicsInOrder: Array<{ topic: Topic; depth: number; number: string }> = [];
+    const visitTopics = (parentId: string | null, depth: number, parentNumber = '') => {
+      let siblingNumber = 0;
+      for (const topic of project.topics.filter((item) => item.parentId === parentId)) {
+        siblingNumber += 1;
+        const number = parentNumber ? `${parentNumber}.${siblingNumber}` : String(siblingNumber);
+        topicsInOrder.push({ topic, depth, number });
+        visitTopics(topic.id, depth + 1, number);
+      }
+    };
+    visitTopics(null, 0);
+    const ungroupedTasks = projectTasks.filter((task) => !project.topics.some((topic) => topic.id === task.topicId));
+    try {
+      const { Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } = await import('docx');
+      const reportRun = (text: string, bold = false, size?: number) => new TextRun({
+        text,
+        font: 'Times New Roman',
+        ...(size ? { size } : {}),
+        ...(bold ? { bold: true } : {}),
+      });
+      const reportParagraph = (text: string, heading?: (typeof HeadingLevel)[keyof typeof HeadingLevel]) => new Paragraph({
+        children: [reportRun(text, false, heading ? undefined : 24)],
+        ...(heading ? { heading } : {}),
+        spacing: { line: 360 },
+      });
+      const createTaskTable = (tasks: Task[]) => new Table({
+        rows: [
+          new TableRow({ children: ['#', 'Task', 'Description', 'Owner', 'Due date', 'Status', 'Comments'].map((label) => new TableCell({ children: [new Paragraph({ children: [reportRun(label, true, 24)], spacing: { line: 360 } })] })) }),
+          ...(tasks.length ? tasks.map((task, index) => new TableRow({ children: [
+            String(index + 1),
+            task.title,
+            task.description || 'No description',
+            task.owner || 'Unassigned',
+            task.dueDate ? dateLabel(task.dueDate) : 'No date',
+            task.status,
+            task.comments.join('\n') || 'No comments',
+          ].map((value) => new TableCell({ children: value.split('\n').map((line) => reportParagraph(line)) })) })) : [new TableRow({ children: [new TableCell({ columnSpan: 7, children: [reportParagraph('No tasks for this topic.')] })] })]),
+        ],
+        width: { size: 100, type: WidthType.PERCENTAGE },
+      });
+      const children: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Table>> = [
+        reportParagraph(project.name, HeadingLevel.TITLE),
+        new Paragraph({ children: [reportRun('Project report', true, 24), reportRun(`  |  Generated ${new Intl.DateTimeFormat('en', { dateStyle: 'long' }).format(new Date())}`, false, 24)], spacing: { line: 360 } }),
+        ...(project.description ? [reportParagraph(project.description)] : []),
+        reportParagraph('Progress summary', HeadingLevel.HEADING_1),
+        reportParagraph(`Completion: ${completion}% (${completed} of ${projectTasks.length} tasks complete)`),
+        reportParagraph(`Open: ${projectTasks.length - completed}  |  Blocked: ${blocked}  |  Topics: ${project.topics.length}`),
+        reportParagraph('Action items', HeadingLevel.HEADING_1),
+      ];
+      const headingLevels = [HeadingLevel.HEADING_2, HeadingLevel.HEADING_3, HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6];
+      for (const { topic, depth, number } of topicsInOrder) {
+        const tasks = projectTasks.filter((task) => task.topicId === topic.id);
+        children.push(
+          reportParagraph(`${number} ${topic.name}`, headingLevels[Math.min(depth, headingLevels.length - 1)]),
+          createTaskTable(tasks),
+        );
+      }
+      if (ungroupedTasks.length) {
+        children.push(reportParagraph('Other tasks', HeadingLevel.HEADING_2), createTaskTable(ungroupedTasks));
+      }
+      if (!projectTasks.length && !project.topics.length) children.push(reportParagraph('No topics or action items have been added to this project.'));
+
+      const blob = await Packer.toBlob(new Document({ sections: [{ children }] }));
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${project.name.replace(/[^\w.-]+/g, '-').replace(/^-|-$/g, '') || 'project'}-report.docx`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setNotice('Project report downloaded');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not create the project report.');
+    }
+  }
 
   async function createProject(name: string, description: string) {
     const result = await request<{ project: Project; role: Role }>('/api/projects', devUser, token, { method: 'POST', body: JSON.stringify({ name, description }) });
@@ -563,7 +640,7 @@ export default function App() {
     <main className="main-area">
       <header className="topbar"><div className="breadcrumbs"><span>Projects</span><ChevronRight size={13} /><strong>{project?.name ?? 'Your projects'}</strong>{currentTopic && <><ChevronRight size={13} /><strong>{currentTopic.name}</strong></>}</div><div className="topbar-right"><span className="sync-state"><i /> Shared and up to date</span><button className="icon-button" aria-label="Help"><CircleHelp size={17} /></button><div className="top-avatar">{session?.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</div></div></header>
       {project ? <div className="page-content">
-        <section className="page-heading"><div className="eyebrow"><span /> PROJECT TRACKER <small>TEAM SPACE</small></div><div className="heading-row"><div><div className="heading-titleline"><h1>{currentTopic?.name ?? 'Project overview'}</h1>{currentTopic && canManage && <><button className="icon-button" title="Edit topic" aria-label={`Edit ${currentTopic.name}`} onClick={() => { setEditingTopic(currentTopic); setDialog('edit-topic'); }}><Pencil size={15} /></button><button className="icon-button danger-icon" title="Remove topic" aria-label={`Remove ${currentTopic.name}`} onClick={() => setPendingRemoval({ kind: 'topic', topic: currentTopic })}><Trash2 size={15} /></button></>}</div><p>{currentTopic ? `A focused view of work inside ${currentTopic.name}.` : project.description}</p></div><div className="heading-buttons"><button className="button secondary" disabled={!canEditWork} onClick={() => { setCandidates([]); setCopilotProposals(null); setCopilotPrompt(''); setTranscriptName(''); setTranscriptText(''); setDialog('transcript'); }}><FileUp size={15} /> Import transcript</button><button className="button primary" disabled={!canEditWork} onClick={() => { setEditingTask(null); setDialog('task'); }}><Plus size={16} /> Add task</button></div></div></section>
+        <section className="page-heading"><div className="eyebrow"><span /> PROJECT TRACKER <small>TEAM SPACE</small></div><div className="heading-row"><div><div className="heading-titleline"><h1>{currentTopic?.name ?? 'Project overview'}</h1>{currentTopic && canManage && <><button className="icon-button" title="Edit topic" aria-label={`Edit ${currentTopic.name}`} onClick={() => { setEditingTopic(currentTopic); setDialog('edit-topic'); }}><Pencil size={15} /></button><button className="icon-button danger-icon" title="Remove topic" aria-label={`Remove ${currentTopic.name}`} onClick={() => setPendingRemoval({ kind: 'topic', topic: currentTopic })}><Trash2 size={15} /></button></>}</div><p>{currentTopic ? `A focused view of work inside ${currentTopic.name}.` : project.description}</p></div><div className="heading-buttons"><button className="button secondary" onClick={() => void downloadReport()}><FileDown size={15} /> Download report</button><button className="button secondary" disabled={!canEditWork} onClick={() => { setCandidates([]); setCopilotProposals(null); setCopilotPrompt(''); setTranscriptName(''); setTranscriptText(''); setDialog('transcript'); }}><FileUp size={15} /> Import transcript</button><button className="button primary" disabled={!canEditWork} onClick={() => { setEditingTask(null); setDialog('task'); }}><Plus size={16} /> Add task</button></div></div></section>
         {activeTopicId === null && <section className="overview-strip"><div className="progress-wrap"><div className="progress-ring" style={{ '--progress': `${completion}%` } as React.CSSProperties}><span>{completion}<small>%</small></span></div><div><small>PROJECT COMPLETION</small><strong>{completion > 60 ? 'Moving forward' : blocked ? 'Needs attention' : 'Getting underway'}</strong></div></div><div className="strip-divider" /><div className="metric"><small>OPEN TASKS</small><strong>{projectTasks.length - completed}<span> across {project.topics.length} topics</span></strong></div><div className="metric"><small>BLOCKED</small><strong className={blocked ? 'blocked-metric' : ''}>{String(blocked).padStart(2, '0')}<span> need follow-up</span></strong></div><div className="team-peek"><div className="avatar-stack"><i>MC</i><i>JL</i><i>SR</i></div><span>Core team</span>{canManageMembers && <button className="icon-button tiny-add" onClick={() => setDialog('members')} aria-label="Manage access"><Plus size={13} /></button>}</div></section>}
         <section className="topic-summary"><div className="summary-icon"><AlignLeft size={16} /></div><div><strong>{currentTopic ? 'Topic status' : 'Project pulse'}</strong><span>{currentTopic ? `${topicTasks.length} tasks · shared with project members` : 'A living view of work in motion'}</span></div><div className="summary-right"><div className="health-bars"><i /><i /><i /><i /><i /></div><span>{roleTitle(role)} access</span>{canManageMembers && <button className="icon-button" aria-label="Manage members" onClick={() => setDialog('members')}><UsersRound size={16} /></button>}</div></section>
         <section className="tasks-panel" style={{ '--task-font-size': `${taskFontSize}px` } as React.CSSProperties}>

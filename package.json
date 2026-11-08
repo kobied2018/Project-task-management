@@ -13,6 +13,7 @@
   "dependencies": {
     "@microsoft/teams-js": "^2.37.0",
     "archiver": "^7.0.1",
+    "docx": "^9.15.3",
     "express": "^4.21.2",
     "jose": "^5.9.6",
     "lucide-react": "^0.468.0",
