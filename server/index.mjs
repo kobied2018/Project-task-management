@@ -219,7 +219,11 @@ app.post('/api/projects/:projectId/tasks', requireProject(['owner', 'manager', '
   const { title, topicId, status } = req.body;
   if (!String(title || '').trim() || !req.projectState.topics.some((topic) => topic.id === topicId)) return res.status(400).json({ error: 'A title and valid topic are required.' });
   if (!['Not started', 'In progress', 'Blocked', 'Done'].includes(status)) return res.status(400).json({ error: 'Invalid task status.' });
-  const task = { id: randomUUID(), topicId, title: String(title).trim(), description: String(req.body.description || ''), dueDate: String(req.body.dueDate || ''), status, owner: String(req.body.owner || ''), comments: [] };
+  const parentTaskId = req.body.parentTaskId;
+  const parentTask = parentTaskId == null ? null : req.projectState.tasks.find((item) => item.id === parentTaskId);
+  if (parentTaskId != null && !parentTask) return res.status(400).json({ error: 'Choose an existing parent task in this project.' });
+  if (parentTask && parentTask.topicId !== topicId) return res.status(400).json({ error: 'A follow-up must use its parent task topic.' });
+  const task = { id: randomUUID(), topicId, title: String(title).trim(), description: String(req.body.description || ''), dueDate: String(req.body.dueDate || ''), status, owner: String(req.body.owner || ''), comments: [], ...(parentTask ? { parentTaskId: parentTask.id } : {}) };
   req.projectState.tasks.unshift(task);
   saveProject(req.params.projectId, req.projectState);
   res.status(201).json({ task });
@@ -228,6 +232,18 @@ app.post('/api/projects/:projectId/tasks', requireProject(['owner', 'manager', '
 app.patch('/api/projects/:projectId/tasks/:taskId', requireProject(['owner', 'manager', 'contributor']), (req, res) => {
   const task = req.projectState.tasks.find((item) => item.id === req.params.taskId);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if ('parentTaskId' in req.body && req.body.parentTaskId !== task.parentTaskId) return res.status(400).json({ error: 'A task parent cannot be changed.' });
+  if ('topicId' in req.body && req.membership.role !== 'contributor') {
+    if (!req.projectState.topics.some((topic) => topic.id === req.body.topicId)) return res.status(400).json({ error: 'Choose an existing topic.' });
+    const parentTask = req.projectState.tasks.find((item) => item.id === task.parentTaskId);
+    if (parentTask && req.body.topicId !== parentTask.topicId) return res.status(400).json({ error: 'Move the parent task to change the follow-up topic.' });
+    const descendants = new Set([task.id]);
+    for (let size = -1; size !== descendants.size;) {
+      size = descendants.size;
+      for (const item of req.projectState.tasks) if (descendants.has(item.parentTaskId)) descendants.add(item.id);
+    }
+    for (const item of req.projectState.tasks) if (descendants.has(item.id)) item.topicId = req.body.topicId;
+  }
   const allowedFields = req.membership.role === 'contributor' ? ['status', 'comments'] : ['title', 'description', 'dueDate', 'status', 'owner', 'topicId', 'comments'];
   for (const field of allowedFields) if (field in req.body) task[field] = req.body[field];
   if (task.title !== undefined && !String(task.title).trim()) return res.status(400).json({ error: 'Task title cannot be empty.' });
@@ -252,12 +268,14 @@ app.post('/api/projects/:projectId/recycle-bin/:taskId/restore', requireProject(
   const index = recycleBin.findIndex((task) => task.id === req.params.taskId);
   if (index === -1) return res.status(404).json({ error: 'Recycle-bin task not found.' });
   const deletedTask = recycleBin[index];
-  const requestedTopicId = String(req.body.topicId || deletedTask.topicId);
+  const parentTask = req.projectState.tasks.find((item) => item.id === deletedTask.parentTaskId);
+  const requestedTopicId = parentTask?.topicId ?? String(req.body.topicId || deletedTask.topicId);
   if (!req.projectState.topics.some((topic) => topic.id === requestedTopicId)) {
     return res.status(400).json({ error: 'Choose an existing topic for this task.' });
   }
   const { topicName: _topicName, deletedAt: _deletedAt, ...task } = deletedTask;
   task.topicId = requestedTopicId;
+  if (req.projectState.tasks.some((item) => item.parentTaskId === task.id && item.topicId !== task.topicId)) return res.status(409).json({ error: 'Restore this task to the same topic as its existing follow-ups.' });
   req.projectState.tasks.unshift(task);
   req.projectState.recycleBin = recycleBin.filter((item) => item.id !== req.params.taskId);
   saveProject(req.params.projectId, req.projectState);
@@ -319,4 +337,4 @@ if (isProduction) {
 }
 
 const port = Number(process.env.PORT || 3001);
-app.listen(port, '0.0.0.0', () => console.log(`Fieldnotes API listening on ${port}`));
+const server = app.listen(port, '0.0.0.0', () => console.log(`Fieldnotes API listening on ${server.address().port}`));

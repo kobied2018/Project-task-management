@@ -30,4 +30,40 @@ The package exposes a personal tab. It is not a Loop component and does not writ
 
 ## Local role preview
 
+### Task follow-ups
+
+Use **Add follow-up** below a task or in its details dialog to create an action
+linked to that task, including a completed task. Follow-ups appear directly below
+their parent (unless a search or status filter hides it) and identify the parent
+by title. Each has an independent owner, due date, status, and comments; completing
+a parent does not complete its follow-ups. Follow-ups can also have follow-ups.
+Each parent shows a **Follow-ups** list of clickable action titles and their
+statuses, both beneath the task and in its details dialog. Click a title to open
+that follow-up, even if a search or status filter hides its row.
+Owners, Managers, and Contributors can create them; Viewers remain read-only.
+
+Follow-ups inherit their parent's topic. Move the parent to move its active
+follow-ups together. Removing a parent does not remove its follow-ups; they remain
+visible with a removed-parent label until it is restored. Restore a parent to
+the same topic as its remaining follow-ups. Word reports include parent titles.
+Existing tasks require no data migration. The API accepts an optional
+`parentTaskId` when creating a task; this link cannot be reassigned later.
+
+Run the focused API regression tests using `node --test server\follow-ups.test.mjs`.
+They use a temporary database and do not modify local project data.
+
+The app now lives in `LoroLite managment\Action Item managment`, with its existing
+Git repository and SQLite data preserved. From that directory, run `run-app.bat`
+on Windows or `npm run dev` in a terminal. The Windows launcher waits for both
+the frontend and its proxied local API before opening the browser. Its HTTP
+check uses basic parsing to avoid Windows PowerShell's interactive web-content
+prompt and IPv4 loopback to avoid `localhost` resolution delays. If startup fails,
+check the development server window and ensure ports
+5173 and 3001 are not occupied by another instance.
+
+The project-management agent is available at the LoroLite workspace level in
+`..\.github\agents\project-management-expert.agent.md`; its app-operation skill is
+in `..\.github\skills\action-item-management\SKILL.md`.
+
+
 In development, use the **Preview role** selector in the sidebar to test Owner, Manager, Contributor, and Viewer behavior. This is a local-only preview backed by the local SQLite database. Production identity and authorization come from Teams SSO and project memberships.

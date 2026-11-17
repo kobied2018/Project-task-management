@@ -110,6 +110,16 @@
 #root .font-size-control output { width: 34px; color: #5f6e64; font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
 #root .task-cell-wrap { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
 #root .task-cell-wrap .task-cell { flex: 1; min-width: 0; }
+#root .follow-up-label { margin: 0 0 6px 25px; padding-left: 9px; border-left: 2px solid #c9dbc9; color: #607066; font-size: 12px; overflow-wrap: anywhere; }
+#root .add-follow-up { display: inline-flex; align-items: center; gap: 4px; margin: 4px 0 10px 25px; font-size: 12px; }
+#root .follow-up-links { margin: 8px 0 10px 25px; padding: 10px 12px; border-left: 2px solid #c9dbc9; background: #f8faf7; color: #5d7062; font-size: 12px; }
+#root .follow-up-links > strong { font-size: 12px; }
+#root .follow-up-links ul { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+#root .follow-up-links li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; }
+#root .follow-up-links button { border: 0; padding: 0; background: transparent; color: #386e50; text-align: left; text-decoration: underline; font: inherit; overflow-wrap: anywhere; cursor: pointer; }
+#root .follow-up-links li > span { color: #66746b; font-size: 11px; }
+#root .task-modal .follow-up-links { margin-left: 0; }
+#root .tasks-panel tr:has(.follow-up-label) .task-cell-wrap { margin-left: 18px; }
 #root .task-comments-section { margin: 0 0 3px 25px; padding: 8px 8px 0 0; border-top: 1px solid #edf0eb; }
 #root .task-comments-heading { display: flex; align-items: center; gap: 7px; color: #5d7062; font-size: 12px; font-weight: 700; }
 #root .task-comments-heading span { color: #89978d; font-size: 11px; font-weight: 500; }
