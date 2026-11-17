@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { app as teamsApp, authentication } from '@microsoft/teams-js';
 import {
   AlignLeft, Archive, ArrowDown, ArrowUp, CalendarDays, Check, ChevronDown, ChevronRight, Copy, FileDown,
@@ -9,12 +9,12 @@ import {
 type Role = 'owner' | 'manager' | 'contributor' | 'viewer';
 type Status = 'Not started' | 'In progress' | 'Blocked' | 'Done';
 type Topic = { id: string; name: string; parentId: string | null };
-type Task = { id: string; topicId: string; parentTaskId?: string; title: string; description: string; dueDate: string; status: Status; owner: string; comments: string[] };
+type Task = { id: string; taskNumber: number; topicId: string; parentTaskId?: string; title: string; description: string; detailedDescription?: string; dueDate: string; status: Status; owner: string; comments: string[] };
 type DeletedTask = Task & { topicName: string; deletedAt: string };
 type Project = { id: string; name: string; description: string; topics: Topic[]; tasks: Task[]; recycleBin?: DeletedTask[] };
 type ProjectSummary = { id: string; name: string; description: string; role: Role };
 type Member = { id: string; email: string; name: string; role: Role };
-type Candidate = Omit<Task, 'id' | 'topicId' | 'comments'> & { selected: boolean };
+type Candidate = Omit<Task, 'id' | 'taskNumber' | 'topicId' | 'comments'> & { selected: boolean };
 type CopilotProposal =
   | { action: 'create'; topicId: string; title: string; description: string; dueDate: string; status: Status; owner: string; selected: boolean }
   | { action: 'update'; taskId: string; taskTitle: string; changes: Partial<Pick<Task, 'title' | 'description' | 'dueDate' | 'status' | 'owner'>>; selected: boolean };
@@ -25,6 +25,7 @@ type RemovalTarget =
   | { kind: 'deleted-task'; task: DeletedTask };
 
 const statuses: Status[] = ['Not started', 'In progress', 'Blocked', 'Done'];
+const taskDisplayId = (task: Task) => `TASK-${String(task.taskNumber).padStart(3, '0')}`;
 const demoUsers = [
   { id: 'local-alex', name: 'Alex Morgan', role: 'Owner' },
   { id: 'local-maya', name: 'Maya Chen', role: 'Manager' },
@@ -111,6 +112,7 @@ function buildCopilotTranscriptPrompt(transcript: string, project: Project, targ
     topicId: task.topicId,
     title: task.title,
     description: task.description,
+    detailedDescription: task.detailedDescription,
     dueDate: task.dueDate,
     status: task.status,
     owner: task.owner,
@@ -278,13 +280,13 @@ export default function App() {
   const topicTasks = projectTasks.filter((task) => !activeTopicId || task.topicId === activeTopicId);
   const visibleTasks = useMemo(() => orderTasks(topicTasks).filter((task) => {
     const statusMatch = filter === 'All tasks' || task.status === filter;
-    const searchMatch = !search || `${task.title} ${task.description} ${task.owner}`.toLowerCase().includes(search.toLowerCase());
+    const searchMatch = !search || `${taskDisplayId(task)} ${task.id} ${task.title} ${task.description} ${task.detailedDescription ?? ''} ${task.owner}`.toLowerCase().includes(search.toLowerCase());
     return statusMatch && searchMatch;
   }), [filter, search, project, activeTopicId]);
   const recycleBin = project?.recycleBin ?? [];
   const topicRecycleBin = recycleBin.filter((task) => !activeTopicId || task.topicId === activeTopicId);
   const visibleRecycleBin = useMemo(() => topicRecycleBin.filter((task) =>
-    !search || `${task.title} ${task.topicName} ${task.owner}`.toLowerCase().includes(search.toLowerCase()),
+    !search || `${taskDisplayId(task)} ${task.id} ${task.title} ${task.description} ${task.detailedDescription ?? ''} ${task.topicName} ${task.owner}`.toLowerCase().includes(search.toLowerCase()),
   ), [project, activeTopicId, search]);
   const completed = projectTasks.filter((task) => task.status === 'Done').length;
   const blocked = projectTasks.filter((task) => task.status === 'Blocked').length;
@@ -322,8 +324,8 @@ export default function App() {
           new TableRow({ children: ['#', 'Task', 'Description', 'Owner', 'Due date', 'Status', 'Comments'].map((label) => new TableCell({ children: [new Paragraph({ children: [reportRun(label, true, 24)], spacing: { line: 360 } })] })) }),
           ...(tasks.length ? orderTasks(tasks).map((task, index) => new TableRow({ children: [
             String(index + 1),
-            task.parentTaskId ? `${task.title}\nFollow-up of: ${projectTasks.find((parent) => parent.id === task.parentTaskId)?.title ?? 'Removed task'}` : task.title,
-            task.description || 'No description',
+            `${task.title}\nTask ID: ${taskDisplayId(task)}${task.parentTaskId ? `\nFollow-up of: ${projectTasks.find((parent) => parent.id === task.parentTaskId)?.title ?? 'Removed task'}` : ''}`,
+            [task.description || 'No description', task.detailedDescription].filter(Boolean).join('\n\n'),
             task.owner || 'Unassigned',
             task.dueDate ? dateLabel(task.dueDate) : 'No date',
             task.status,
@@ -424,7 +426,7 @@ export default function App() {
     try { await saveTopics(next); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not reorder topics.'); }
   }
 
-  async function addTask(task: Omit<Task, 'id'>) {
+  async function addTask(task: Omit<Task, 'id' | 'taskNumber'>) {
     if (!project) return;
     try {
       await request(`/api/projects/${project.id}/tasks`, devUser, token, { method: 'POST', body: JSON.stringify(task) });
@@ -697,20 +699,21 @@ export default function App() {
                 <div className="task-cell-wrap">
                   <button className="task-cell" onClick={() => { setEditingTask(task); setDialog('task'); }}>
                     <span className={`task-check ${task.status === 'Done' ? 'done' : ''}`}>{task.status === 'Done' && <Check size={11} />}</span>
-                    <span className="task-copy"><strong className="task-title">{task.title}</strong><span className="task-description">{task.description || 'No description provided.'}</span></span>
+                    <span className="task-copy"><span className="task-titleline"><strong className="task-title">{task.title}</strong><span className="task-id">Task ID: {taskDisplayId(task)}</span></span><span className="task-description">{task.description || 'No description provided.'}</span></span>
                   </button>
                 </div>
+                {task.detailedDescription && <TaskDetails taskTitle={task.title}><p>{task.detailedDescription}</p></TaskDetails>}
                 <FollowUpLinks task={task} tasks={projectTasks} onOpen={openTask} />
                 {canEditWork && <button className="button secondary add-follow-up" onClick={() => startFollowUp(task)} aria-label={`Add follow-up to ${task.title}`}><Plus size={13} /> Add follow-up</button>}
                 <section className="task-comments-section" aria-label={`Comments for ${task.title}`}>
                   <div className="task-comments-heading">Comments <span>{task.comments.length}</span></div>
-                  {task.comments.length ? <div className="task-comments-list">{task.comments.map((comment, index) => <p key={`${task.id}-${index}`}>{comment}</p>)}</div> : <p className="no-task-comments">No comments yet.</p>}
-                  {canEditWork && task.status !== 'Done' && <div className="task-comment-compose"><textarea value={commentDrafts[task.id] ?? ''} onChange={(event) => setCommentDrafts((drafts) => ({ ...drafts, [task.id]: event.target.value }))} placeholder="Add a comment..." rows={1} aria-label={`New comment for ${task.title}`} /><button className="button secondary" disabled={!commentDrafts[task.id]?.trim()} onClick={() => void saveTaskComment(task)}>Add</button></div>}
+                  {task.comments.length ? <div className="task-comments-list">{task.comments.map((comment, index) => <p key={`${task.id}-${index}`}><CommentText text={comment} tasks={projectTasks} onOpen={openTask} /></p>)}</div> : <p className="no-task-comments">No comments yet.</p>}
+                  {canEditWork && task.status !== 'Done' && <><div className="task-comment-compose"><textarea value={commentDrafts[task.id] ?? ''} onChange={(event) => setCommentDrafts((drafts) => ({ ...drafts, [task.id]: event.target.value }))} placeholder="Add a comment..." rows={1} aria-label={`New comment for ${task.title}`} /><button className="button secondary" disabled={!commentDrafts[task.id]?.trim()} onClick={() => void saveTaskComment(task)}>Add</button></div><TaskLinkPicker task={task} tasks={projectTasks} onSelect={(linkedTask) => setCommentDrafts((drafts) => ({ ...drafts, [task.id]: appendTaskReference(drafts[task.id] ?? '', linkedTask) }))} /></>}
                 </section>
               </td>
               <td><span className="owner-initials">{task.owner ? task.owner.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase() : <UsersRound size={13} />}</span><span className="owner-name">{task.owner || 'Unassigned'}</span></td>
               <td><span className="date-value"><CalendarDays size={13} />{dateLabel(task.dueDate)}</span></td>
-              <td><select disabled={!canEditWork || task.status === 'Done'} className={`status-pill ${statusKey(task.status)}`} value={task.status} onChange={(event) => void updateStatus(task, event.target.value as Status)} aria-label={`Status for ${task.title}`}>{statuses.map((status) => <option key={status}>{status}</option>)}</select></td>
+              <td><select disabled={!canEditWork || task.status === 'Done'} className={`status-pill ${statusKey(task.status)}`} value={task.status} onChange={(event) => void updateStatus(task, event.target.value as Status)} aria-label={`Status for ${task.title}`}>{statuses.map((status) => <option key={status}>{status}</option>)}</select>{canEditWork && task.status === 'Done' && <button className="button secondary reopen-task" onClick={() => void updateTask(task, { status: 'In progress' })} aria-label={`Reopen ${task.title}`}><RotateCcw size={13} /> Reopen task</button>}</td>
               <td><button className="icon-button row-edit" aria-label={`Open ${task.title}`} onClick={() => { setEditingTask(task); setDialog('task'); }}><MoreHorizontal size={16} /></button></td>
             </tr>)}
             {(showRecycleBin ? !visibleRecycleBin.length : !visibleTasks.length) && <tr><td colSpan={5}><div className="empty-list"><div>{showRecycleBin ? <Archive size={18} /> : <Search size={18} />}</div><strong>{search ? 'No matching tasks' : showRecycleBin ? 'Recycle bin is empty' : 'Nothing on this list yet'}</strong><span>{search ? 'Try another search.' : showRecycleBin ? 'Removed tasks for this topic will appear here.' : 'Add a task or import a transcript to get started.'}</span>{!showRecycleBin && !search && canEditWork && <button className="button primary" onClick={() => { setEditingTask(null); setDialog('task'); }}><Plus size={15} /> Add first task</button>}</div></td></tr>}
@@ -780,6 +783,50 @@ function TopicDialog({ topics, selectedParentId, initialTopic, onClose, onSave }
   return <Modal title={initialTopic ? 'Edit topic' : 'Add a topic'} eyebrow="PROJECT STRUCTURE" onClose={onClose}><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (name.trim()) void onSave(name.trim(), parentId || null); }}><label>Topic name<input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Customer research" /></label><label>Place under<select value={parentId} onChange={(event) => setParentId(event.target.value)}><option value="">Project root</option>{parentTopics.map((topic) => <option key={topic.id} value={topic.id}>{topic.name}</option>)}</select></label><p className="field-note">Topics can be nested and reordered from the project sidebar.</p><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button className="button primary" type="submit">{initialTopic ? <Check size={15} /> : <Plus size={15} />}{initialTopic ? 'Save changes' : 'Add topic'}</button></div></form></Modal>;
 }
 
+function TaskDetails({ taskTitle, children }: { taskTitle: string; children: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
+  return <section className="task-details">
+    <button type="button" className="button secondary details-toggle" aria-expanded={expanded} aria-controls={contentId} aria-label={`${expanded ? 'Hide' : 'Show'} details for ${taskTitle}`} onClick={() => setExpanded(!expanded)}>
+      {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{expanded ? 'Hide details' : 'Show details'}
+    </button>
+    <div id={contentId} className="task-details-content" hidden={!expanded}>{children}</div>
+  </section>;
+}
+
+function appendTaskReference(text: string, task: Task) {
+  const label = task.title.replace(/[\[\]\r\n]/g, ' ');
+  return `${text}${text && !/\s$/.test(text) ? ' ' : ''}[${label}](task:${encodeURIComponent(task.id)})`;
+}
+
+function TaskLinkPicker({ task, tasks, onSelect }: { task: Task; tasks: Task[]; onSelect: (task: Task) => void }) {
+  const targets = tasks.filter((candidate) => candidate.id !== task.id);
+  return <label className="task-link-picker">Link a task
+    <select aria-label={`Link a task in comment for ${task.title}`} value="" disabled={!targets.length} onChange={(event) => {
+      const target = targets.find((candidate) => candidate.id === event.target.value);
+      if (target) onSelect(target);
+    }}>
+      <option value="">{targets.length ? 'Choose task by ID or title' : 'No other tasks in this project'}</option>
+      {targets.map((target) => <option key={target.id} value={target.id}>{taskDisplayId(target)} - {target.title}</option>)}
+    </select>
+  </label>;
+}
+
+function CommentText({ text, tasks, onOpen }: { text: string; tasks: Task[]; onOpen: (task: Task) => void }) {
+  const parts: React.ReactNode[] = [];
+  let offset = 0;
+  for (const match of text.matchAll(/\[([^\]\r\n]+)\]\(task:([^\s)]+)\)/g)) {
+    parts.push(text.slice(offset, match.index));
+    const target = tasks.find((task) => encodeURIComponent(task.id) === match[2]);
+    parts.push(target
+      ? <button type="button" className="task-comment-link" key={match.index} title={`Task ID: ${taskDisplayId(target)}`} onClick={() => onOpen(target)}>{target.title}</button>
+      : <span className="unavailable-task-link" key={match.index}>{match[1]} (task unavailable: {match[2]})</span>);
+    offset = match.index + match[0].length;
+  }
+  parts.push(text.slice(offset));
+  return <>{parts}</>;
+}
+
 function FollowUpLinks({ task, tasks, onOpen }: { task: Task; tasks: Task[]; onOpen: (task: Task) => void }) {
   const followUps = tasks.filter((candidate) => candidate.parentTaskId === task.id);
   if (!followUps.length) return null;
@@ -792,9 +839,10 @@ function FollowUpLinks({ task, tasks, onOpen }: { task: Task; tasks: Task[]; onO
   </section>;
 }
 
-function TaskDialog({ project, task, parentTask, role, defaultTopicId, onClose, onCreate, onSave, onFollowUp, onOpenTask, onRemove }: { project: Project; task: Task | null; parentTask?: Task; role: Role; defaultTopicId: string; onClose: () => void; onCreate: (task: Omit<Task, 'id'>) => Promise<void>; onSave: (task: Task, changes: Partial<Task>) => Promise<void>; onFollowUp: (task: Task) => void; onOpenTask: (task: Task) => void; onRemove: (task: Task) => void }) {
+function TaskDialog({ project, task, parentTask, role, defaultTopicId, onClose, onCreate, onSave, onFollowUp, onOpenTask, onRemove }: { project: Project; task: Task | null; parentTask?: Task; role: Role; defaultTopicId: string; onClose: () => void; onCreate: (task: Omit<Task, 'id' | 'taskNumber'>) => Promise<void>; onSave: (task: Task, changes: Partial<Task>) => Promise<void>; onFollowUp: (task: Task) => void; onOpenTask: (task: Task) => void; onRemove: (task: Task) => void }) {
   const [title, setTitle] = useState(task?.title ?? '');
   const [description, setDescription] = useState(task?.description ?? '');
+  const [detailedDescription, setDetailedDescription] = useState(task?.detailedDescription ?? '');
   const [dueDate, setDueDate] = useState(task?.dueDate ?? '');
   const [status, setStatus] = useState<Status>(task?.status ?? 'Not started');
   const [owner, setOwner] = useState(task?.owner ?? '');
@@ -806,16 +854,20 @@ function TaskDialog({ project, task, parentTask, role, defaultTopicId, onClose, 
   const canEditDetails = canEdit && !isCompleted;
   const canChangeStatus = role !== 'viewer' && !isCompleted;
   const canComment = role !== 'viewer' && !isCompleted;
-  return <Modal title={task ? 'Task details' : parentTask ? 'Add a follow-up' : 'Add a task'} eyebrow={task ? 'ACTION ITEM' : 'NEW ACTION'} onClose={onClose} className="task-modal"><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; if (task) { const changes = canEdit ? { title: title.trim(), description: description.trim(), dueDate, status, owner: owner.trim(), topicId, comments } : { status, comments }; void onSave(task, changes); } else { void onCreate({ topicId, ...(parentTask ? { parentTaskId: parentTask.id } : {}), title: title.trim(), description: description.trim(), dueDate, status, owner: owner.trim(), comments: [] }); } }}>
+  return <Modal title={task ? 'Task details' : parentTask ? 'Add a follow-up' : 'Add a task'} eyebrow={task ? 'ACTION ITEM' : 'NEW ACTION'} onClose={onClose} className="task-modal"><form className="modal-form" onSubmit={(event) => { event.preventDefault(); if (!title.trim()) return; if (task) { const changes = canEdit ? { title: title.trim(), description: description.trim(), detailedDescription: detailedDescription.trim(), dueDate, status, owner: owner.trim(), topicId, comments } : { status, comments }; void onSave(task, changes); } else { void onCreate({ topicId, ...(parentTask ? { parentTaskId: parentTask.id } : {}), title: title.trim(), description: description.trim(), detailedDescription: detailedDescription.trim(), dueDate, status, owner: owner.trim(), comments: [] }); } }}>
     {parentTask && <p className="field-note">Follow-up of: <strong>{parentTask.title}</strong>. This action has its own status, owner, and due date.</p>}
+    {task && <label>Task ID<input readOnly value={taskDisplayId(task)} /></label>}
     <label>Title<input autoFocus required disabled={Boolean(task) && !canEditDetails} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What needs to happen?" /></label>
-    <label>Description<textarea disabled={Boolean(task) && !canEditDetails} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add context, criteria, or useful links." /></label>
+    <label>Short description<textarea disabled={Boolean(task) && !canEditDetails} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="A brief summary that stays visible in the task list." /></label>
+    {(!task || canEditDetails || detailedDescription) && <TaskDetails taskTitle={title || 'new task'}>
+      {(!task || canEditDetails) ? <label>Detailed description<textarea rows={12} value={detailedDescription} onChange={(event) => setDetailedDescription(event.target.value)} placeholder={'Problem:\n\nImpact:\n\nRecommendation:\n\nSources and closure evidence:'} /></label> : <p>{detailedDescription}</p>}
+    </TaskDetails>}
     <div className="form-grid"><label>Due date<input type="date" disabled={Boolean(task) && !canEditDetails} value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label><label>Status<select disabled={!canChangeStatus} value={status} onChange={(event) => setStatus(event.target.value as Status)}>{statuses.map((value) => <option key={value}>{value}</option>)}</select></label></div>
     <div className="form-grid"><label>Owner<input disabled={Boolean(task) && !canEditDetails} value={owner} onChange={(event) => setOwner(event.target.value)} placeholder="Name" /></label><label>Topic<select disabled={Boolean(parentTask) || (Boolean(task) && !canEditDetails)} value={topicId} onChange={(event) => setTopicId(event.target.value)}>{project.topics.map((topic) => <option value={topic.id} key={topic.id}>{topic.name}</option>)}</select></label></div>
     {task && <FollowUpLinks task={task} tasks={project.tasks} onOpen={onOpenTask} />}
     {task && role !== 'viewer' && <button type="button" className="button secondary" onClick={() => onFollowUp(task)}><Plus size={15} /> Add follow-up</button>}
-    {task && <div className="comments-block"><div className="comments-title"><MessageSquareText size={14} /> Comments <span>{comments.length}</span></div>{comments.map((value, index) => <p key={`${index}-${value}`} className="comment-item">{value}</p>)}{canComment && <div className="comment-compose"><input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Write a comment..." /><button type="button" className="button secondary" disabled={!comment.trim()} onClick={() => { setComments([...comments, comment.trim()]); setComment(''); }}>Add</button></div>}</div>}
-    <div className="modal-actions modal-actions-split">{task && canEdit && <button type="button" className="button danger-button" onClick={() => onRemove(task)}><Trash2 size={15} /> Remove task</button>}<span /> <button type="button" className="button secondary" onClick={onClose}>Close</button>{(!task || role !== 'viewer') && !isCompleted && <button className="button primary" type="submit"><Check size={15} /> {task ? 'Save changes' : 'Create task'}</button>}</div>
+    {task && <div className="comments-block"><div className="comments-title"><MessageSquareText size={14} /> Comments <span>{comments.length}</span></div>{comments.map((value, index) => <p key={`${index}-${value}`} className="comment-item"><CommentText text={value} tasks={project.tasks} onOpen={onOpenTask} /></p>)}{canComment && <><div className="comment-compose"><input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Write a comment..." /><button type="button" className="button secondary" disabled={!comment.trim()} onClick={() => { setComments([...comments, comment.trim()]); setComment(''); }}>Add</button></div><TaskLinkPicker task={task} tasks={project.tasks} onSelect={(linkedTask) => setComment((value) => appendTaskReference(value, linkedTask))} /></>}</div>}
+    <div className="modal-actions modal-actions-split">{task && canEdit && <button type="button" className="button danger-button" onClick={() => onRemove(task)}><Trash2 size={15} /> Remove task</button>}<span /> <button type="button" className="button secondary" onClick={onClose}>Close</button>{task && role !== 'viewer' && isCompleted && <button type="button" className="button primary" onClick={() => void onSave(task, { status: 'In progress' })}><RotateCcw size={15} /> Reopen task</button>}{(!task || role !== 'viewer') && !isCompleted && <button className="button primary" type="submit"><Check size={15} /> {task ? 'Save changes' : 'Create task'}</button>}</div>
   </form></Modal>;
 }
 

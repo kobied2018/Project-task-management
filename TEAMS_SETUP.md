@@ -30,6 +30,54 @@ The package exposes a personal tab. It is not a Loop component and does not writ
 
 ## Local role preview
 
+### Reopening completed tasks
+
+Owners, Managers, and Contributors can select **Reopen task** beside a completed
+task's status or in its details dialog. This changes only its status to
+**In progress** and restores the editing and commenting controls permitted by the
+user's role. Its ID, comments, owner, due date, and follow-up tasks are preserved.
+Viewers cannot reopen tasks. Under a **Done** filter, a reopened task leaves the
+list; select **In progress** or **All tasks** to find it.
+
+### Short descriptions and collapsible details
+
+The short description stays visible beneath each task title. Tasks can also have
+a separate detailed description, opened and closed with **Show details** /
+**Hide details** in the task list and task dialog. Details start collapsed;
+expanding or collapsing them never changes the saved text.
+
+Owners and Managers can edit both descriptions in the task dialog and select
+**Save changes**. Contributors can provide both when creating tasks but cannot
+edit existing descriptions; Viewers can read and expand details. Completed tasks
+remain read-only until reopened. Existing tasks without details keep their
+original summaries. Search includes detailed text, and Word reports include both
+descriptions.
+
+For engineering review tasks, details can include **Problem**, **Impact**,
+**Recommendation**, source references, and proposed closure evidence. Generated
+review claims must remain labeled unverified until checked against source
+requirements; example limits and standards are not automatically approved.
+
+### Task IDs and comment links
+
+Every task, including follow-ups, displays a **Task ID** such as `TASK-001` or
+`TASK-002` beside its title, in its details dialog, and in Word reports. Numbering
+is sequential within each project and continues beyond `TASK-999`. IDs are
+searchable and remain unchanged when tasks are edited, moved, reopened, or
+restored. Deleted task numbers are not reused.
+
+Existing tasks and recycle-bin entries receive saved numbers automatically when
+their project is first accessed. These display IDs are separate from the
+unchanged internal IDs, preserving existing comment links and parent relationships.
+
+Use **Link a task** beside a comment composer to select another task in the same
+project by ID or title. This inserts `[Task title](task:task-id)` into the draft.
+Add the comment as usual; in the details dialog, also select **Save changes**.
+Saved references become clickable task titles that open the linked task, even
+when its row is filtered out. Links resolve by ID, so renaming a task does not
+break them. Removed tasks are labeled unavailable until restored. Plain text and
+existing comments remain unchanged; links are not interpreted as HTML.
+
 ### Task follow-ups
 
 Use **Add follow-up** below a task or in its details dialog to create an action

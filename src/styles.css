@@ -101,8 +101,21 @@
 #root .task-cell { align-items: flex-start; }
 #root .task-check { margin-top: 3px; }
 #root .task-copy { display: grid; flex: 1; width: 100%; min-width: 0; gap: 5px; text-align: left; }
-#root .tasks-panel .task-title { display: block; overflow: visible; color: #34443b; font-size: var(--task-font-size, 16px); line-height: 1.35; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+#root .task-titleline { display: block; min-width: 0; }
+#root .task-id { display: inline-block; max-width: calc(100% - 8px); margin-left: 8px; padding: 2px 6px; border-radius: 4px; background: #edf2eb; color: #607066; font-size: 11px; font-family: monospace; vertical-align: baseline; overflow-wrap: anywhere; user-select: text; }
+#root .task-link-picker { display: grid; gap: 5px; margin-top: 8px; color: #607066; font-size: 12px; }
+#root .task-link-picker select { width: 100%; min-width: 0; max-width: 100%; padding: 7px; border: 1px solid #dfe6de; border-radius: 4px; background: #fcfdfb; color: #35463c; font: inherit; }
+#root .task-comment-link { display: inline; border: 0; padding: 0; background: transparent; color: #386e50; text-decoration: underline; font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+#root .unavailable-task-link { color: #876247; }
+#root .reopen-task { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; padding: 5px 7px; font-size: 11px; }
+#root .tasks-panel .task-title { display: inline; overflow: visible; color: #34443b; font-size: var(--task-font-size, 16px); line-height: 1.35; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 #root .tasks-panel .task-description { display: block; max-width: none; overflow: visible; color: #66746b; font-size: max(14px, calc(var(--task-font-size, 16px) * .84)); line-height: 1.5; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+#root .task-details { min-width: 0; margin: 6px 0 10px 25px; }
+#root .details-toggle { gap: 5px; font-size: 12px; }
+#root .task-details-content { margin-top: 8px; padding: 12px; border-left: 2px solid #c9dbc9; background: #f8faf7; color: #526459; font-size: max(13px, calc(var(--task-font-size, 16px) * .84)); line-height: 1.55; overflow-wrap: anywhere; }
+#root .task-details-content p { margin: 0; white-space: pre-wrap; }
+#root .task-modal .task-details { margin-left: 0; }
+#root .task-modal .task-details-content textarea { min-height: 220px; }
 #root .tasks-panel td { height: auto; vertical-align: top; padding-top: 14px; padding-bottom: 14px; }
 #root .font-size-control { display: flex; align-items: center; gap: 7px; min-height: 38px; color: #607066; font-size: 12px; white-space: nowrap; }
 #root .font-size-control > svg { color: #77877c; flex: 0 0 auto; }

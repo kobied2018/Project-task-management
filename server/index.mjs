@@ -100,16 +100,56 @@ function getMembership(projectId, user) {
     .get(projectId, user.id, user.email, user.id);
 }
 
+function ensureTaskNumbers(state) {
+  const tasks = [...state.tasks, ...(state.recycleBin ?? [])];
+  const used = new Set();
+  let next = state.nextTaskNumber ?? 1;
+  for (const task of tasks) {
+    if (task.taskNumber === undefined) continue;
+    if (!Number.isSafeInteger(task.taskNumber) || task.taskNumber < 1 || used.has(task.taskNumber)) throw new Error('Invalid or duplicate task number.');
+    used.add(task.taskNumber);
+    next = Math.max(next, task.taskNumber + 1);
+  }
+  let changed = false;
+  for (const task of tasks) {
+    if (task.taskNumber !== undefined) continue;
+    task.taskNumber = next++;
+    changed = true;
+  }
+  if (!Number.isSafeInteger(next) || next < 1) throw new Error('Task number sequence is invalid or exhausted.');
+  if (state.nextTaskNumber !== next) changed = true;
+  state.nextTaskNumber = next;
+  return changed;
+}
+
+const projectRequests = new Map();
+
 function requireProject(minimumRoles = ['owner', 'manager', 'contributor', 'viewer']) {
   return (req, res, next) => {
-    const record = db.prepare('SELECT * FROM projects WHERE id = ? AND tenant_id = ?').get(req.params.projectId, req.user.tenantId);
-    const membership = record && getMembership(record.id, req.user);
-    if (!record || !membership) return res.status(404).json({ error: 'Project not found.' });
-    if (!minimumRoles.includes(membership.role)) return res.status(403).json({ error: 'Your project role does not allow this action.' });
-    req.projectRecord = record;
-    req.projectState = JSON.parse(record.state);
-    req.membership = membership;
-    next();
+    // Keep number allocation and legacy backfills in the same project write queue.
+    const projectId = req.params.projectId;
+    const previous = projectRequests.get(projectId) ?? Promise.resolve();
+    let release;
+    const completed = new Promise((resolve) => { release = resolve; });
+    const pending = previous.then(() => completed);
+    projectRequests.set(projectId, pending);
+    pending.then(() => { if (projectRequests.get(projectId) === pending) projectRequests.delete(projectId); });
+    res.once('finish', release);
+    res.once('close', release);
+    const load = async () => {
+      await previous;
+      if (res.destroyed) return;
+      const record = db.prepare('SELECT * FROM projects WHERE id = ? AND tenant_id = ?').get(req.params.projectId, req.user.tenantId);
+      const membership = record && await getMembership(record.id, req.user);
+      if (!record || !membership) return res.status(404).json({ error: 'Project not found.' });
+      if (!minimumRoles.includes(membership.role)) return res.status(403).json({ error: 'Your project role does not allow this action.' });
+      req.projectRecord = record;
+      req.projectState = JSON.parse(record.state);
+      req.membership = membership;
+      if (ensureTaskNumbers(req.projectState)) await saveProject(record.id, req.projectState);
+      next();
+    };
+    load().catch(next);
   };
 }
 
@@ -137,7 +177,7 @@ app.post('/api/projects', (req, res) => {
   if (!name) return res.status(400).json({ error: 'Project name is required.' });
   const id = randomUUID();
   const topic = { id: randomUUID(), name: 'Getting started', parentId: null };
-  const state = { id, name, description: String(req.body.description || ''), topics: [topic], tasks: [] };
+  const state = { id, name, description: String(req.body.description || ''), topics: [topic], tasks: [], nextTaskNumber: 1 };
   const create = () => {
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -217,13 +257,14 @@ app.delete('/api/projects/:projectId/topics/:topicId', requireProject(['owner', 
 
 app.post('/api/projects/:projectId/tasks', requireProject(['owner', 'manager', 'contributor']), (req, res) => {
   const { title, topicId, status } = req.body;
+  if ('detailedDescription' in req.body && typeof req.body.detailedDescription !== 'string') return res.status(400).json({ error: 'Detailed description must be text.' });
   if (!String(title || '').trim() || !req.projectState.topics.some((topic) => topic.id === topicId)) return res.status(400).json({ error: 'A title and valid topic are required.' });
   if (!['Not started', 'In progress', 'Blocked', 'Done'].includes(status)) return res.status(400).json({ error: 'Invalid task status.' });
   const parentTaskId = req.body.parentTaskId;
   const parentTask = parentTaskId == null ? null : req.projectState.tasks.find((item) => item.id === parentTaskId);
   if (parentTaskId != null && !parentTask) return res.status(400).json({ error: 'Choose an existing parent task in this project.' });
   if (parentTask && parentTask.topicId !== topicId) return res.status(400).json({ error: 'A follow-up must use its parent task topic.' });
-  const task = { id: randomUUID(), topicId, title: String(title).trim(), description: String(req.body.description || ''), dueDate: String(req.body.dueDate || ''), status, owner: String(req.body.owner || ''), comments: [], ...(parentTask ? { parentTaskId: parentTask.id } : {}) };
+  const task = { id: randomUUID(), taskNumber: req.projectState.nextTaskNumber++, topicId, title: String(title).trim(), description: String(req.body.description || ''), ...(typeof req.body.detailedDescription === 'string' ? { detailedDescription: req.body.detailedDescription } : {}), dueDate: String(req.body.dueDate || ''), status, owner: String(req.body.owner || ''), comments: [], ...(parentTask ? { parentTaskId: parentTask.id } : {}) };
   req.projectState.tasks.unshift(task);
   saveProject(req.params.projectId, req.projectState);
   res.status(201).json({ task });
@@ -232,6 +273,7 @@ app.post('/api/projects/:projectId/tasks', requireProject(['owner', 'manager', '
 app.patch('/api/projects/:projectId/tasks/:taskId', requireProject(['owner', 'manager', 'contributor']), (req, res) => {
   const task = req.projectState.tasks.find((item) => item.id === req.params.taskId);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if ('detailedDescription' in req.body && typeof req.body.detailedDescription !== 'string') return res.status(400).json({ error: 'Detailed description must be text.' });
   if ('parentTaskId' in req.body && req.body.parentTaskId !== task.parentTaskId) return res.status(400).json({ error: 'A task parent cannot be changed.' });
   if ('topicId' in req.body && req.membership.role !== 'contributor') {
     if (!req.projectState.topics.some((topic) => topic.id === req.body.topicId)) return res.status(400).json({ error: 'Choose an existing topic.' });
@@ -244,7 +286,7 @@ app.patch('/api/projects/:projectId/tasks/:taskId', requireProject(['owner', 'ma
     }
     for (const item of req.projectState.tasks) if (descendants.has(item.id)) item.topicId = req.body.topicId;
   }
-  const allowedFields = req.membership.role === 'contributor' ? ['status', 'comments'] : ['title', 'description', 'dueDate', 'status', 'owner', 'topicId', 'comments'];
+  const allowedFields = req.membership.role === 'contributor' ? ['status', 'comments'] : ['title', 'description', 'detailedDescription', 'dueDate', 'status', 'owner', 'topicId', 'comments'];
   for (const field of allowedFields) if (field in req.body) task[field] = req.body[field];
   if (task.title !== undefined && !String(task.title).trim()) return res.status(400).json({ error: 'Task title cannot be empty.' });
   if (task.status !== undefined && !['Not started', 'In progress', 'Blocked', 'Done'].includes(task.status)) return res.status(400).json({ error: 'Invalid task status.' });

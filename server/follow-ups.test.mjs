@@ -64,14 +64,36 @@ async function createTask(title, extra = {}, user = 'local-alex') {
   })).task;
 }
 
+test('legacy tasks and recycled tasks receive persistent numbers without changing links or content', async () => {
+  const db = new DatabaseSync(join(directory, 'test.db'));
+  let original;
+  try {
+    original = JSON.parse(db.prepare('SELECT state FROM projects WHERE id = ?').get('northstar').state);
+    original.tasks[0].comments.push('[Milestone calendar](task:t2)');
+    original.recycleBin = [{ ...original.tasks[0], id: 'legacy-removed', parentTaskId: 't1', topicName: 'Launch plan', deletedAt: '2026-11-01T00:00:00Z' }];
+    db.prepare('UPDATE projects SET state = ? WHERE id = ?').run(JSON.stringify(original), 'northstar');
+    const { project } = await request('');
+    const withoutNumber = ({ taskNumber, ...task }) => task;
+    assert.deepEqual(project.tasks.map(withoutNumber), original.tasks);
+    assert.deepEqual(project.recycleBin.map(withoutNumber), original.recycleBin);
+    assert.deepEqual([...project.tasks, ...project.recycleBin].map((task) => task.taskNumber), [1, 2, 3, 4, 5, 6]);
+    assert.equal(project.nextTaskNumber, 7);
+    assert.deepEqual((await request('')).project, project);
+    const saved = JSON.parse(db.prepare('SELECT state FROM projects WHERE id = ?').get('northstar').state);
+    assert.deepEqual(saved, project);
+  } finally { db.close(); }
+});
+
 test('follow-ups persist with independent fields, comments, and permissions', async () => {
   const parent = await createTask('Completed parent', { status: 'Done' });
   const child = await createTask('Follow up after completion', {
     parentTaskId: parent.id, owner: 'Test owner', dueDate: '2026-12-01',
   }, 'local-jordan');
+  assert.equal(child.taskNumber, parent.taskNumber + 1);
   await request(`/tasks/${child.id}`, {
     method: 'PATCH', user: 'local-jordan', body: { status: 'In progress', comments: ['Follow-up progress'] },
   });
+
   const { project } = await request('');
   assert.equal(project.tasks.find((task) => task.id === parent.id).status, 'Done');
   assert.deepEqual(project.tasks.find((task) => task.id === child.id), {
@@ -86,6 +108,44 @@ test('follow-ups persist with independent fields, comments, and permissions', as
     method: 'POST', user: 'local-viewer', status: 403,
     body: { title: 'Forbidden follow-up', topicId: 'launch', parentTaskId: parent.id, status: 'Not started' },
   });
+});
+
+test('task numbering survives edits, deletion and restoration, and simultaneous creates', async () => {
+  const parent = await createTask('Numbered parent', { taskNumber: 9000 });
+  const child = await createTask('Numbered child', { parentTaskId: parent.id });
+  assert.notEqual(parent.taskNumber, 9000);
+  const updated = (await request(`/tasks/${child.id}`, {
+    method: 'PATCH', body: { title: 'Renamed child', taskNumber: 1, id: 'changed-id', status: 'Done' },
+  })).task;
+  assert.equal(updated.taskNumber, child.taskNumber);
+  assert.equal(updated.id, child.id);
+  await request(`/tasks/${child.id}`, { method: 'DELETE', status: 204 });
+  const whileRemoved = await createTask('Created while child is recycled');
+  assert.equal(whileRemoved.taskNumber, child.taskNumber + 1);
+  const restored = (await request(`/recycle-bin/${child.id}/restore`, { method: 'POST', body: {} })).task;
+  assert.equal(restored.taskNumber, child.taskNumber);
+  assert.equal(restored.parentTaskId, parent.id);
+  const reopened = (await request(`/tasks/${child.id}`, { method: 'PATCH', body: { status: 'In progress' } })).task;
+  assert.equal(reopened.taskNumber, child.taskNumber);
+  await request(`/tasks/${whileRemoved.id}`, { method: 'DELETE', status: 204 });
+  await request(`/recycle-bin/${whileRemoved.id}`, { method: 'DELETE', status: 204 });
+  const concurrent = await Promise.all(Array.from({ length: 5 }, (_, index) => createTask(`Concurrent numbered task ${index}`)));
+  assert.deepEqual(concurrent.map((task) => task.taskNumber).sort((a, b) => a - b),
+    Array.from({ length: 5 }, (_, index) => whileRemoved.taskNumber + index + 1));
+  const persisted = (await request('')).project.tasks;
+  for (const task of concurrent) assert.equal(persisted.find((item) => item.id === task.id).taskNumber, task.taskNumber);
+
+  const response = await fetch(`${baseUrl}/api/projects`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Independent numbering' }),
+  });
+  assert.equal(response.status, 201);
+  const { project } = await response.json();
+  const created = await fetch(`${baseUrl}/api/projects/${project.id}/tasks`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'First task in another project', topicId: project.topics[0].id, status: 'Not started' }),
+  });
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).task.taskNumber, 1);
 });
 
 test('parent validation rejects missing and cross-project parents and wrong topics', async () => {
@@ -127,4 +187,35 @@ test('nested follow-ups move together and retain links across deletion and resto
   const restored = await request(`/recycle-bin/${child.id}/restore`, { method: 'POST', body: { topicId: 'launch' } });
   assert.equal(restored.task.topicId, 'product');
   assert.equal(restored.task.parentTaskId, parent.id);
+});
+
+test('detailed descriptions persist independently of summaries and respect editing permissions', async () => {
+  const task = await createTask('Task with collapsible details', {
+    description: 'Always-visible summary',
+    detailedDescription: 'Problem:\nOriginal issue\n\nImpact:\nPotential effect\n\nRecommendation:\nProposed action',
+  });
+  const details = `${task.detailedDescription}\n\nClosure evidence:\nReviewed output`;
+  const updated = (await request(`/tasks/${task.id}`, { method: 'PATCH', body: { detailedDescription: details } })).task;
+  assert.deepEqual(updated, { ...task, detailedDescription: details });
+  const contributor = (await request(`/tasks/${task.id}`, {
+    method: 'PATCH', user: 'local-jordan',
+    body: { description: 'Unauthorized summary', detailedDescription: 'Unauthorized details', status: 'In progress' },
+  })).task;
+  assert.deepEqual(contributor, { ...updated, status: 'In progress' });
+  await request(`/tasks/${task.id}`, {
+    method: 'PATCH', user: 'local-viewer', status: 403, body: { detailedDescription: 'Forbidden' },
+  });
+  await request(`/tasks/${task.id}`, { method: 'PATCH', status: 400, body: { detailedDescription: [] } });
+  await request('/tasks', {
+    method: 'POST', status: 400,
+    body: { title: 'Invalid details', topicId: 'launch', status: 'Not started', detailedDescription: {} },
+  });
+  const stored = (await request('')).project.tasks.find((item) => item.id === task.id);
+  assert.deepEqual(stored, contributor);
+  await request(`/tasks/${task.id}`, { method: 'DELETE', status: 204 });
+  const restored = (await request(`/recycle-bin/${task.id}/restore`, { method: 'POST', body: {} })).task;
+  assert.deepEqual(restored, stored);
+  const cleared = (await request(`/tasks/${task.id}`, { method: 'PATCH', body: { detailedDescription: '' } })).task;
+  assert.equal(cleared.detailedDescription, '');
+  assert.equal(cleared.description, task.description);
 });
