@@ -307,56 +307,152 @@ export default function App() {
     visitTopics(null, 0);
     const ungroupedTasks = projectTasks.filter((task) => !project.topics.some((topic) => topic.id === task.topicId));
     try {
-      const { Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } = await import('docx');
-      const reportRun = (text: string, bold = false, size?: number) => new TextRun({
-        text,
-        font: 'Times New Roman',
-        ...(size ? { size } : {}),
-        ...(bold ? { bold: true } : {}),
+      const { AlignmentType, Bookmark, BorderStyle, Document, Footer, Header, HeadingLevel, InternalHyperlink, Packer, PageNumber, PageOrientation, Paragraph, Table, TableCell, TableLayoutType, TableRow, TextRun, WidthType } = await import('docx');
+      const palette = { ink: '25332D', muted: '66746B', forest: '173C36', green: '54856B', line: 'E4E9E2', soft: 'F8FAF7', white: 'FFFFFF' };
+      const statusColors: Record<Status, { fill: string; color: string }> = {
+        'Not started': { fill: 'F0F1EC', color: '7B8277' },
+        'In progress': { fill: 'E8F2E8', color: '477D61' },
+        Blocked: { fill: 'F7EDE4', color: 'AA674C' },
+        Done: { fill: 'EDF3EE', color: '627F6C' },
+      };
+      const reportWidth = 15398;
+      const columnWidths = [9498, 2100, 1800, 2000];
+      const border = { style: BorderStyle.SINGLE, size: 4, color: palette.line };
+      const borders = { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border };
+      const bookmarks = new Map(projectTasks.map((task, index) => [task.id, `task_${index + 1}`]));
+      const taskAnchor = (task: Task) => {
+        const anchor = bookmarks.get(task.id);
+        if (!anchor) throw new Error(`Missing report reference for ${taskDisplayId(task)}.`);
+        return anchor;
+      };
+      const reportRun = (text: string, bold = false, color = palette.ink, size = 22) => new TextRun({ text, bold, color, size, font: 'Calibri' });
+      const reportParagraph = (text: string, bold = false, color = palette.ink) => new Paragraph({ children: [reportRun(text, bold, color)] });
+      const fieldParagraph = (label: string, value: string) => new Paragraph({
+        children: [reportRun(`${label}: `, true, palette.forest), reportRun(value)],
       });
-      const reportParagraph = (text: string, heading?: (typeof HeadingLevel)[keyof typeof HeadingLevel]) => new Paragraph({
-        children: [reportRun(text, false, heading ? undefined : 24)],
-        ...(heading ? { heading } : {}),
-        spacing: { line: 360 },
+      const taskLink = (task: Task) => new InternalHyperlink({
+        anchor: taskAnchor(task),
+        children: [new TextRun({ text: `${task.title} (${taskDisplayId(task)})`, color: '386E50', underline: {}, font: 'Calibri', size: 22 })],
       });
-      const createTaskTable = (tasks: Task[]) => new Table({
-        rows: [
-          new TableRow({ children: ['#', 'Task', 'Description', 'Owner', 'Due date', 'Status', 'Comments'].map((label) => new TableCell({ children: [new Paragraph({ children: [reportRun(label, true, 24)], spacing: { line: 360 } })] })) }),
-          ...(tasks.length ? orderTasks(tasks).map((task, index) => new TableRow({ children: [
-            String(index + 1),
-            `${task.title}\nTask ID: ${taskDisplayId(task)}${task.parentTaskId ? `\nFollow-up of: ${projectTasks.find((parent) => parent.id === task.parentTaskId)?.title ?? 'Removed task'}` : ''}`,
-            [task.description || 'No description', task.detailedDescription].filter(Boolean).join('\n\n'),
-            task.owner || 'Unassigned',
-            task.dueDate ? dateLabel(task.dueDate) : 'No date',
-            task.status,
-            task.comments.join('\n') || 'No comments',
-          ].map((value) => new TableCell({ children: value.split('\n').map((line) => reportParagraph(line)) })) })) : [new TableRow({ children: [new TableCell({ columnSpan: 7, children: [reportParagraph('No tasks for this topic.')] })] })]),
-        ],
-        width: { size: 100, type: WidthType.PERCENTAGE },
+      const commentParagraph = (text: string) => new Paragraph({
+        children: parseTaskComment(text, projectTasks).map((part) => typeof part === 'string'
+          ? reportRun(part)
+          : part.target ? taskLink(part.target) : reportRun(`${part.label} (task unavailable: ${part.referenceId})`, false, palette.muted)),
       });
+      const detailParagraphs = (text: string) => text.split(/\r?\n/).map((line) => {
+        const label = line.match(/^([A-Za-z][A-Za-z ]{1,35}:)(.*)$/);
+        return new Paragraph({
+          children: label ? [reportRun(label[1], true, palette.forest), reportRun(label[2])] : [reportRun(line)],
+          keepNext: Boolean(label && !label[2].trim()),
+        });
+      });
+      const cell = (paragraphs: InstanceType<typeof Paragraph>[], width: number, fill = palette.white, columnSpan = 1) => new TableCell({
+        children: paragraphs, columnSpan, width: { size: width, type: WidthType.DXA },
+        shading: { fill }, margins: { top: 130, bottom: 130, left: 180, right: 180 },
+      });
+      const fullRow = (paragraphs: InstanceType<typeof Paragraph>[], fill = palette.white) => new TableRow({
+        children: [cell(paragraphs, reportWidth, fill, 4)], cantSplit: false,
+      });
+      const topicPath = (topicId: string) => {
+        const names: string[] = [];
+        const visited = new Set<string>();
+        let topic = project.topics.find((item) => item.id === topicId);
+        while (topic && !visited.has(topic.id)) {
+          visited.add(topic.id);
+          names.unshift(topic.name);
+          topic = project.topics.find((item) => item.id === topic?.parentId);
+        }
+        return names.join(' > ') || 'Other tasks';
+      };
+      const createTaskTable = (tasks: Task[]) => {
+        const rows = [new TableRow({
+          tableHeader: true,
+          children: ['TASK', 'OWNER', 'DUE DATE', 'STATUS'].map((label, index) =>
+            cell([new Paragraph({ children: [reportRun(label, true, palette.white, 18)] })], columnWidths[index], palette.forest)),
+        })];
+        for (const task of orderTasks(tasks)) {
+          const parent = projectTasks.find((item) => item.id === task.parentTaskId);
+          const followUps = projectTasks.filter((item) => item.parentTaskId === task.id);
+          rows.push(
+            new TableRow({ cantSplit: true, keepNext: true, children: [
+              cell([new Paragraph({ children: [
+                new Bookmark({ id: taskAnchor(task), children: [reportRun(task.title, true, palette.forest, 26)] }),
+                reportRun(`   ${taskDisplayId(task)}`, true, palette.green, 20),
+              ] })], columnWidths[0]),
+              cell([reportParagraph(task.owner || 'Unassigned')], columnWidths[1]),
+              cell([reportParagraph(task.dueDate ? new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(new Date(`${task.dueDate}T12:00:00`)) : 'No date')], columnWidths[2]),
+              cell([reportParagraph(task.status, true, statusColors[task.status].color)], columnWidths[3], statusColors[task.status].fill),
+            ] }),
+            fullRow([fieldParagraph('Topic', topicPath(task.topicId)), new Paragraph({
+              children: [reportRun('Follow-up of: ', true, palette.forest), ...(parent ? [taskLink(parent)] : [reportRun(task.parentTaskId ? 'Removed task' : 'None (top-level task)')])],
+            })]),
+            fullRow([reportParagraph('SHORT DESCRIPTION', true, palette.forest), ...detailParagraphs(task.description || 'No description provided.')]),
+            fullRow([reportParagraph('DETAILED DESCRIPTION', true, palette.forest), ...detailParagraphs(task.detailedDescription || 'No detailed description provided.')], palette.soft),
+            fullRow([
+              reportParagraph(`FOLLOW-UPS (${followUps.length})`, true, palette.forest),
+              ...(followUps.length ? followUps.map((followUp) => new Paragraph({ children: [taskLink(followUp), reportRun(`  |  ${followUp.status}`)] })) : [reportParagraph('No follow-ups.', false, palette.muted)]),
+            ]),
+            fullRow([
+              reportParagraph(`COMMENTS (${task.comments.length})`, true, palette.forest),
+              ...(task.comments.length ? task.comments.flatMap((comment, index) => [
+                reportParagraph(`Comment ${index + 1}`, true, palette.muted),
+                ...comment.split(/\r?\n/).map(commentParagraph),
+              ]) : [reportParagraph('No comments yet.', false, palette.muted)]),
+            ], palette.soft),
+          );
+        }
+        if (!tasks.length) rows.push(fullRow([reportParagraph('No tasks for this topic.', false, palette.muted)]));
+        return new Table({ rows, columnWidths, width: { size: reportWidth, type: WidthType.DXA }, layout: TableLayoutType.FIXED, borders });
+      };
       const children: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Table>> = [
-        reportParagraph(project.name, HeadingLevel.TITLE),
-        new Paragraph({ children: [reportRun('Project report', true, 24), reportRun(`  |  Generated ${new Intl.DateTimeFormat('en', { dateStyle: 'long' }).format(new Date())}`, false, 24)], spacing: { line: 360 } }),
-        ...(project.description ? [reportParagraph(project.description)] : []),
-        reportParagraph('Progress summary', HeadingLevel.HEADING_1),
-        reportParagraph(`Completion: ${completion}% (${completed} of ${projectTasks.length} tasks complete)`),
-        reportParagraph(`Open: ${projectTasks.length - completed}  |  Blocked: ${blocked}  |  Topics: ${project.topics.length}`),
-        reportParagraph('Action items', HeadingLevel.HEADING_1),
+        new Paragraph({ children: [reportRun('fieldnotes  |  PROJECT WORKSPACE', true, palette.white, 24)], shading: { fill: palette.forest }, spacing: { before: 180, after: 240 } }),
+        new Paragraph({ children: [reportRun('PROJECT TRACKER  /  TEAM SPACE', true, palette.green, 18)], spacing: { after: 100 } }),
+        new Paragraph({ children: [reportRun(project.name, true, palette.forest, 40)], heading: HeadingLevel.TITLE }),
+        ...detailParagraphs(project.description || 'No project description provided.'),
+        reportParagraph(`Generated ${new Intl.DateTimeFormat('en', { dateStyle: 'long', timeStyle: 'short' }).format(new Date())} | Complete project report; all tasks and details included.`, false, palette.muted),
+        new Table({
+          rows: [new TableRow({ children: [
+            ['PROJECT COMPLETION', `${completion}%`, `${completed} of ${projectTasks.length} tasks complete`],
+            ['OPEN TASKS', String(projectTasks.length - completed), `across ${project.topics.length} topics`],
+            ['BLOCKED', String(blocked), 'need follow-up'],
+            ['TOTAL TASKS', String(projectTasks.length), 'all statuses included'],
+          ].map(([label, value, note], index) => cell([
+            new Paragraph({ children: [reportRun(label, true, palette.muted, 18)] }),
+            new Paragraph({ children: [reportRun(value, true, palette.forest, 32)] }),
+            reportParagraph(note, false, palette.muted),
+          ], [3850, 3850, 3850, 3848][index], palette.soft)) })],
+          columnWidths: [3850, 3850, 3850, 3848], width: { size: reportWidth, type: WidthType.DXA }, layout: TableLayoutType.FIXED, borders,
+        }),
+        reportParagraph('Project pulse | A living view of work in motion', true, palette.forest),
+        reportParagraph(statuses.map((status) => `${status}: ${projectTasks.filter((task) => task.status === status).length}`).join('   |   '), false, palette.muted),
       ];
       const headingLevels = [HeadingLevel.HEADING_2, HeadingLevel.HEADING_3, HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6];
       for (const { topic, depth, number } of topicsInOrder) {
         const tasks = projectTasks.filter((task) => task.topicId === topic.id);
         children.push(
-          reportParagraph(`${number} ${topic.name}`, headingLevels[Math.min(depth, headingLevels.length - 1)]),
+          new Paragraph({ children: [reportRun(`${number} ${topic.name}`, true, palette.forest, 28)], heading: headingLevels[Math.min(depth, headingLevels.length - 1)], spacing: { before: 300, after: 160 }, keepNext: true }),
           createTaskTable(tasks),
+          reportParagraph(''),
         );
       }
       if (ungroupedTasks.length) {
-        children.push(reportParagraph('Other tasks', HeadingLevel.HEADING_2), createTaskTable(ungroupedTasks));
+        children.push(new Paragraph({ text: 'Other tasks', heading: HeadingLevel.HEADING_2 }), createTaskTable(ungroupedTasks));
       }
       if (!projectTasks.length && !project.topics.length) children.push(reportParagraph('No topics or action items have been added to this project.'));
 
-      const blob = await Packer.toBlob(new Document({ sections: [{ children }] }));
+      const blob = await Packer.toBlob(new Document({
+        title: `${project.name} - Project report`, creator: 'Fieldnotes',
+        styles: { default: { document: { run: { font: 'Calibri', size: 22, color: palette.ink }, paragraph: { spacing: { after: 90, line: 280 } } } } },
+        sections: [{
+          properties: { page: { size: { width: 11906, height: 16838, orientation: PageOrientation.LANDSCAPE }, margin: { top: 900, bottom: 900, left: 720, right: 720, header: 300, footer: 300 } } },
+          headers: { default: new Header({ children: [reportParagraph(`FIELDNOTES  /  ${project.name}`, false, palette.muted)] }) },
+          footers: { default: new Footer({ children: [new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            children: [reportRun('FIELDNOTES | PROJECT WORKSPACE    Page ', false, palette.muted, 18), new TextRun({ children: [PageNumber.CURRENT] }), reportRun(' of ', false, palette.muted, 18), new TextRun({ children: [PageNumber.TOTAL_PAGES] })],
+          })] }) },
+          children,
+        }],
+      }));
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -812,19 +908,26 @@ function TaskLinkPicker({ task, tasks, onSelect }: { task: Task; tasks: Task[]; 
   </label>;
 }
 
-function CommentText({ text, tasks, onOpen }: { text: string; tasks: Task[]; onOpen: (task: Task) => void }) {
-  const parts: React.ReactNode[] = [];
+function parseTaskComment(text: string, tasks: Task[]) {
+  const parts: Array<string | { target: Task | undefined; label: string; referenceId: string }> = [];
   let offset = 0;
   for (const match of text.matchAll(/\[([^\]\r\n]+)\]\(task:([^\s)]+)\)/g)) {
     parts.push(text.slice(offset, match.index));
-    const target = tasks.find((task) => encodeURIComponent(task.id) === match[2]);
-    parts.push(target
-      ? <button type="button" className="task-comment-link" key={match.index} title={`Task ID: ${taskDisplayId(target)}`} onClick={() => onOpen(target)}>{target.title}</button>
-      : <span className="unavailable-task-link" key={match.index}>{match[1]} (task unavailable: {match[2]})</span>);
+    parts.push({ target: tasks.find((task) => encodeURIComponent(task.id) === match[2]), label: match[1], referenceId: match[2] });
     offset = match.index + match[0].length;
   }
   parts.push(text.slice(offset));
-  return <>{parts}</>;
+  return parts;
+}
+
+function CommentText({ text, tasks, onOpen }: { text: string; tasks: Task[]; onOpen: (task: Task) => void }) {
+  return <>{parseTaskComment(text, tasks).map((part, index) => {
+    if (typeof part === 'string') return part;
+    const { target, label, referenceId } = part;
+    return target
+      ? <button type="button" className="task-comment-link" key={index} title={`Task ID: ${taskDisplayId(target)}`} onClick={() => onOpen(target)}>{target.title}</button>
+      : <span className="unavailable-task-link" key={index}>{label} (task unavailable: {referenceId})</span>;
+  })}</>;
 }
 
 function FollowUpLinks({ task, tasks, onOpen }: { task: Task; tasks: Task[]; onOpen: (task: Task) => void }) {

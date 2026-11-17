@@ -58,6 +58,22 @@ For engineering review tasks, details can include **Problem**, **Impact**,
 review claims must remain labeled unverified until checked against source
 requirements; example limits and standards are not automatically approved.
 
+### Word reports
+
+**Download report** creates an editable landscape Word document styled like the
+web workspace: forest-green branding, progress metrics, topic headings, and
+task/owner/due-date/status columns with status colors. Full-width sections keep
+long text readable instead of squeezing descriptions into narrow table columns.
+
+Reports include the complete active project, regardless of search, status/topic
+filters, or collapsed details: task titles and IDs, topic paths, parent and
+follow-up references, short and detailed descriptions, owners, due dates,
+statuses, and all comments. Detailed text is always expanded, including source
+references and evidence cautions. Task references in comments and follow-up
+lists link to their entries in the document. Empty fields are labeled explicitly.
+Long sections can flow across pages, with repeated column headings and page
+numbers. Recycle-bin tasks and interactive web controls are not exported.
+
 ### Task IDs and comment links
 
 Every task, including follow-ups, displays a **Task ID** such as `TASK-001` or
